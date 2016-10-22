@@ -28,6 +28,7 @@ import android.widget.Toast;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.android.gms.gcm.GoogleCloudMessaging;
+import com.google.android.gms.iid.InstanceID;
 import com.squareup.okhttp.Authenticator;
 import com.squareup.okhttp.Credentials;
 import com.squareup.okhttp.Headers;
@@ -53,8 +54,6 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
     private GoogleCloudMessaging gcm;
     private String registrationId;
     private Context context;
-    private ProgressDialog dialog;
-    private AsyncTask<Void, Void, Void> registerTask;
 
     //DBとListView関係
     private SQLiteDatabase db;
@@ -88,7 +87,28 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
                 .setPositiveButton("OK", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        accept();
+                        //ネットワークの接続状態を確認
+                        ConnectivityManager connMgr = (ConnectivityManager)
+                                getSystemService(Context.CONNECTIVITY_SERVICE);
+                        NetworkInfo networkInfo = connMgr.getActiveNetworkInfo();
+                        if (networkInfo != null && networkInfo.isConnected()) {
+                            register();
+//                          Toast.makeText(context, "ID registered successfully!!", Toast.LENGTH_LONG).show();
+
+                        } else {
+                            // 電波なかったらこのダイアログ出す
+                            new AlertDialog.Builder(MainActivity.this)
+                                    .setTitle("ネットワーク接続不可")
+                                    .setMessage("電波のある所でリトライして下さい。")
+                                    .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface dialog, int which) {
+                                            finish();
+                                        }
+                                    })
+                                    .setCancelable(false)
+                                    .show();
+                        }
                     }
                 })
                 .setNegativeButton("キャンセル", new DialogInterface.OnClickListener() {
@@ -105,31 +125,6 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
         MyOpenHelper helper = new MyOpenHelper(this);
         db = helper.getWritableDatabase();
 //        db.execSQL("delete from notification;");          //DB内容削除(デバッグ用)
-    }
-    //ダイアログが入れ子にできないから外に出した
-    private void accept() {
-        //ネットワークの接続状態を確認
-        ConnectivityManager connMgr = (ConnectivityManager)
-                getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkInfo networkInfo = connMgr.getActiveNetworkInfo();
-        if (networkInfo != null && networkInfo.isConnected()) {
-            register();
- //         Toast.makeText(context, "ID registered successfully!!", Toast.LENGTH_LONG).show();
-
-        } else {
-            // 電波なかったらこのダイアログ出す
-            new AlertDialog.Builder(this)
-                    .setTitle("ネットワーク接続不可")
-                    .setMessage("電波のある所でリトライして下さい。")
-                    .setPositiveButton("OK", new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface dialog, int which) {
-                            finish();
-                        }
-                    })
-                    .setCancelable(false)
-                    .show();
-        }
     }
 
     @Override
@@ -150,9 +145,7 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (registerTask != null) {
-            registerTask.cancel(true);
-        }
+
         gcm.close();
         db.close();
     }
@@ -308,99 +301,80 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
         editor.apply();
     }
 
-    //登録IDのチェック
+    // 登録IDの登録処理
     private void register() {
 
         // くるくるを表示
-        dialog = new ProgressDialog(MainActivity.this);
+        final ProgressDialog dialog = new ProgressDialog(MainActivity.this);
         dialog.setProgressStyle(ProgressDialog.STYLE_SPINNER);
         dialog.setMessage("登録中");
         dialog.show();
 
-        registerTask = new AsyncTask<Void, Void, Void>() {          //登録処理は非同期で
-            @Override
-            protected Void doInBackground(Void... params) {
-
-                if (gcm == null) {
-                    gcm = GoogleCloudMessaging.getInstance(context);
-                }
-                try {
-                    registrationId = gcm.register(SENDER_ID);       //GCMサーバーへの登録(登録IDの発行)
-                    sendRegistrationIdToAppServer(registrationId);    //登録IDをアプリサーバーに送る
-
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-
-                return null;
-            }
-            @Override
-            protected void onPostExecute(Void result) {
-                registerTask = null;
-            }
-        };
-        registerTask.execute(null, null, null);
-    }
-
-    //登録IDをアプリサーバーに送る
-    private void sendRegistrationIdToAppServer(final String regId) {
-
         //固有の端末識別番号の取得
-        final String devId;
+        final String deviceId;
         TelephonyManager telephonyManager = (TelephonyManager)getSystemService(Context.TELEPHONY_SERVICE);
-        if(telephonyManager.getDeviceId() != null) {//端末IDの有無(電話番号がないとnullらしい)
-            devId = telephonyManager.getDeviceId();  //端末IDを取得
+        if(telephonyManager.getDeviceId() != null) {    //端末IDの有無(電話番号がないとnullらしい)
+            deviceId = telephonyManager.getDeviceId();  //端末IDを取得
         } else {
-            devId = android.os.Build.SERIAL;        //タブレット等は代わりにシリアル番号を取得
+            deviceId = android.os.Build.SERIAL;        //タブレット等は代わりにシリアル番号を取得
         }
 
-        new AsyncTask<Void, Void, String>() {       //通信処理は非同期
+        new AsyncTask<Void, Void, String>() {          //登録処理は非同期で
             @Override
             protected String doInBackground(Void... params) {
+
                 String result = null;
 
-                // リクエストボディを作る
-                final MediaType TEXT = MediaType.parse("text/plain; charset=utf-8");
-                final String BOUNDARY = String.valueOf(System.currentTimeMillis());
-
-                RequestBody requestBody = new MultipartBuilder(BOUNDARY)
-                        .type(MultipartBuilder.FORM)
-                        .addPart(
-                                Headers.of("Content-Disposition", "form-data; name='regId'"),   //ここのnameがphpの$_POST['regId']と連動
-                                RequestBody.create(TEXT, regId))                                       //第2引数が送りたいテキスト
-                        .addPart(                                                                      //2つ以上のデータも送れる
-                                Headers.of("Content-Disposition", "form-data; name='devId'"),
-                                RequestBody.create(TEXT, devId))
-                        .build();
-                // リクエストオブジェクトを作って
-                Request request = new Request.Builder()
-                        .url("http://searching4freedom.razor.jp/GCM/register.php")
-                        .post(requestBody)
-                        .build();
-                OkHttpClient client = new OkHttpClient();
-                //Basic認証に対応する
-                client.setAuthenticator(new Authenticator() {
-                    @Override
-                    public Request authenticate(Proxy proxy, Response response) throws IOException {
-                        String credential = Credentials.basic("guest", "guest");        //ユーザー名, パスワード
-                        return response.request().newBuilder().header("Authorization", credential).build();
-                    }
-                    @Override
-                    public Request authenticateProxy(Proxy proxy, Response response) throws IOException {
-                        return null;
-                    }
-                });
-                // リクエストして結果を受け取って
                 try {
+                    /** GCMサーバーへの登録(登録IDの発行) */
+                    if (gcm == null) {
+                        gcm = GoogleCloudMessaging.getInstance(context);
+                    }
+                    InstanceID instanceID = InstanceID.getInstance(context);
+                    registrationId = instanceID.getToken(SENDER_ID, GoogleCloudMessaging.INSTANCE_ID_SCOPE, null);
+
+                    /** 登録IDをアプリサーバーに送る */
+                    final MediaType TEXT = MediaType.parse("text/plain; charset=utf-8");              // リクエストボディを作る
+                    final String BOUNDARY = String.valueOf(System.currentTimeMillis());
+
+                    RequestBody requestBody = new MultipartBuilder(BOUNDARY)
+                            .type(MultipartBuilder.FORM)
+                            .addPart(
+                                    Headers.of("Content-Disposition", "form-data; name='regId'"),   //ここのnameがphpの$_POST['regId']と連動
+                                    RequestBody.create(TEXT, registrationId))                            //第2引数が送りたいテキスト
+                            .addPart(                                                                      //2つ以上のデータも送れる
+                                    Headers.of("Content-Disposition", "form-data; name='devId'"),
+                                    RequestBody.create(TEXT, deviceId))
+                            .build();
+                    // リクエストオブジェクトを作って
+                    Request request = new Request.Builder()
+                            .url("http://searching4freedom.razor.jp/GCM/register.php")
+                            .post(requestBody)
+                            .build();
+                    OkHttpClient client = new OkHttpClient();
+                    //Basic認証に対応する
+                    client.setAuthenticator(new Authenticator() {
+                        @Override
+                        public Request authenticate(Proxy proxy, Response response) throws IOException {
+                            String credential = Credentials.basic("guest", "guest");        //ユーザー名, パスワード
+                            return response.request().newBuilder().header("Authorization", credential).build();
+                        }
+                        @Override
+                        public Request authenticateProxy(Proxy proxy, Response response) throws IOException {
+                            return null;
+                        }
+                    });
+                    // リクエストして結果を受け取る
                     Response response = client.newCall(request).execute();
                     result = response.body().string();
+
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-                // 返す
+                // 結果返す
                 return result;
             }
-
+            // 結果に応じた処理をUIスレッドで行う
             @Override
             protected void onPostExecute(String result) {
                 Log.d("TAG", result);
