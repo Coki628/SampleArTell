@@ -19,7 +19,7 @@ import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
-import android.widget.AbsListView;
+import android.view.View.OnClickListener;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
 import android.widget.ListView;
@@ -44,7 +44,7 @@ import java.net.Proxy;
 import java.util.ArrayList;
 import java.util.HashMap;
 
-public class MainActivity extends Activity implements OnItemClickListener, View.OnClickListener {
+public class MainActivity extends Activity implements OnItemClickListener, OnClickListener {
 
     //登録の送受信関係
     public static final String PROPERTY_REG_ID = "registration_id";
@@ -161,7 +161,7 @@ public class MainActivity extends Activity implements OnItemClickListener, View.
     }
     //手動更新処理(気持ちの問題)
     @Override
-    public void onClick( View v ) {
+    public void onClick(View v) {
         FVP = 0;
         y = 0;
         dbToListView();
